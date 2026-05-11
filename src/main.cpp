@@ -15,14 +15,15 @@ const uint8_t servo_channels[8] = {4, 7, 2, 5, 0, 6, 3, 1};
 // Same order as above
 // hip : sta aristera otan prostheteis paei to hip pros ta katw, enw sta dejia pros ta panw
 // knee: sta aristera otan prostheteis paei to horn pros ta <- (mprosta), enw sta dejia pros ta -> (dld to katw podi paei antitheta)
-/*const uint16_t servo_homes[8] = {315, 315, 307, 307, 300, 285, 330, 280}; // middle values
-const uint16_t servo_homes[8] = {365, 303, 260, 335, 345, 270, 280, 285};// one standing position*/
-const uint16_t servo_homes[8] = {476, 359, 149, 279, 479, 337, 146, 218};
+const uint16_t servo_homes[8] = {312, 307, 312, 307, 318, 307, 307, 307};
+//const uint16_t servo_homes[8] = {315, 315, 307, 307, 300, 285, 330, 280}; // middle values
+//const uint16_t servo_homes[8] = {365, 303, 260, 335, 345, 270, 280, 285};// one standing position
+const uint16_t servo_standing[8] = {430, 370, 192, 235, 440, 370, 166, 235};
 
-const int8_t servo_dirs[8] = {1, 1, -1, -1, 1, 1, -1, -1}; //inversion
+const int8_t servo_dirs[8] = {-1, -1, 1, 1, -1, -1, 1, 1}; //inversion
 
-const float hip_home_angles[4] = {20.0f, 20.0f, 15.0f, 15.0f}; // angle between the hip and the servo 
-const float knee_home_angles[4] = {65.0f, 65.0f, 38.0f, 38.0f}; // angle between the hip and the lower leg
+const float hip_home_angles[4] = {85.0f, 85.0f, 80.0f, 90.0f}; // angle between the hip and the servo 
+const float knee_home_angles[4] = {90.0f, 90.0f, 90.0f, 90.0f}; // angle between the hip and the lower leg
 
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
@@ -32,6 +33,8 @@ HardwareSerial LidarSerial(2);
 float shadow_distance = 9999.0f;
 float shadow_angle = 0.0f;
 const float TICKS_PER_DEGREE = 2.27f;
+
+volatile bool lidar_is_ready = false;
 
 // Variables for both tasks
 
@@ -49,7 +52,7 @@ SemaphoreHandle_t obstacleMutex;
 
 void standStill() {
   for (int i = 0; i < 8; i++) {
-    pwm.setPWM(servo_channels[i], 0, servo_homes[i]);
+    pwm.setPWM(servo_channels[i], 0, servo_standing[i]);
   }
 }
 
@@ -67,9 +70,11 @@ void InverseKinematics(int leg_num, float target_x, float target_z)
   float d_squared = (target_x * target_x) + (target_z * target_z);
   float distance = sqrt(d_squared);
   float L1 = 100.0f;
+  //float L1 = 140.0f;
   float L2 = 114.0f;
+  //float L2 = 150.0f;
 
-  if (d_squared > (L1 + L2))
+  if (distance > (L1 + L2))
   {
     Serial.println("Out of Reach!");
     return;
@@ -79,7 +84,9 @@ void InverseKinematics(int leg_num, float target_x, float target_z)
 
   float numerator = (L1 * L1) + (L2 * L2) - d_squared;
   float denominator = 2.0f * L1 * L2;
-  float target_knee_angle = acos(numerator / denominator) * (180.0f / M_PI);
+  float cos_angle = numerator / denominator;
+  cos_angle = constrain(cos_angle, -1.0f, 1.0f);
+  float target_knee_angle = acos(cos_angle) * (180.0f / M_PI);
 
   float alpha_rad = atan2 (target_x, -target_z );
   float beta_rad = acos(((L1 * L1) + d_squared - (L2 * L2)) / (2.0f * L1 * distance));
@@ -98,6 +105,7 @@ void InverseKinematics(int leg_num, float target_x, float target_z)
   pwm.setPWM(servo_channels[knee_idx],0,getPWM(knee_offset,servo_homes[knee_idx]));
 
   Serial.printf("Target: (%.1f, %.1f) -> Hip: %.1f°, Knee: %.1f°\n", target_x, target_z, target_hip_angle, target_knee_angle);
+  Serial.printf("Leg %d: Hip PWM=%d, Knee PWM=%d (offsets: %.1f°, %.1f°)\n", leg_num, getPWM(hip_offset, servo_homes[hip_idx]), getPWM(knee_offset,servo_homes[knee_idx]), hip_offset, knee_offset);
 }
 
 struct Point2D
@@ -106,12 +114,30 @@ struct Point2D
   float z;
 };
 
-const Point2D step_trajectory[4] = 
+const Point2D step_trajectory[10] = 
 {
-  {0.0f , -80.0f}, // 1. Lift : Pull the foot up
+  /*{0.0f , -100.0f}, // 1. Lift : Pull the foot up
   {40.0f, -80.0f}, // 2. Reach : Move the foot forward in the air
-  {40.0f, -100.0f}, // 3. Plant: Put the foot down on the ground
-  {-40.0f, -100.0f} // 4. Pull : Drag the foot backwards (So the body moves foward)
+  {40.0f, -120.0f}, // 3. Plant: Put the foot down on the ground
+  {0.0f, -150.0f} // 4. Pull : Ddrage the foot backwards (So the body moves foward)*/
+
+  // --- SWING PHASE ---
+
+  {-40.0f, -130.0f}, // 1. Lift off the ground
+  {-20.0f, -115.0f}, // 2. Swing forward and up
+  {  0.0f, -110.0f}, // 3. Peak height (clearing obstacles)
+  { 20.0f, -115.0f}, // 4. Swing forward and start lowering
+  { 40.0f, -130.0f}, // 5. Nearing the ground
+
+  // --- STANCE PHASE ---
+
+  { 40.0f, -150.0f}, // 6. Plant foot firmly on the ground
+  { 20.0f, -150.0f}, // 7. Pulling body forward
+  {  0.0f, -150.0f}, // 8. Mid-stance (leg straight down)
+  {-20.0f, -150.0f}, // 9. Pushing body forward
+  {-40.0f, -150.0f}  // 10. Max extension, ready to lift again
+
+
 };
 
 // --- LIDAR TASK (Core 0) ---
@@ -195,6 +221,8 @@ void LidarTask(void *pvParameters)
               current_obstacle.closest_angle = shadow_angle;
               current_obstacle.timestamp = millis();
               xSemaphoreGive(obstacleMutex);
+
+              lidar_is_ready = true;
             }
             shadow_distance = 9999.0f;
             shadow_angle = 0.0f;
@@ -298,47 +326,124 @@ void WalkingTask(void *pvParameters)
       } 
       else if(my_distance <= 300.0f) 
       {
-        current_state = STATE_SKID_TURN;
+        current_state = STATE_STOPPED;
+        //current_state = STATE_SKID_TURN;
       } // Hysterisis 
     }
 
     switch (current_state)
     {
       case STATE_BOOTING:
-        if(current_state != previous_state)
+      if(current_state != previous_state)
+      {
+        standStill();
+      }
+
+      while(!lidar_is_ready)
+      {
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        //current_state = STATE_STOPPED;
+        current_state = STATE_WALKING_FORWARD;
+        break;
+
+      case STATE_WALKING_FORWARD: 
+      {
+        int total_points = sizeof(step_trajectory) / sizeof(step_trajectory[0]);
+        int steps = 15;
+
+        for (int i = 0; i < total_points; i++)
         {
-          standStill();
+          // PAIR 1
+          Point2D current_point_1 = step_trajectory[i];
+          Point2D next_point_1 = step_trajectory[(i + 1) % total_points];
+
+          //PAIR 2
+          int shifted_i = (i + 5) % total_points;
+          Point2D current_point_2 = step_trajectory [shifted_i];
+          Point2D next_point_2 = step_trajectory[(shifted_i + 1) % total_points];
+
+          for (int step = 1; step <= steps; step++)
+          {
+            float t = (float) step / steps;// with linear interpolation
+            // float t = (1.0f - cos((float)step / steps * M_PI)) / 2.0f; /cosine interpolation
+
+            float interpolated_x1 = current_point_1.x + ((next_point_1.x - current_point_1.x) * t);
+            float interpolated_z1 = current_point_1.z + ((next_point_1.z - current_point_1.z) * t);
+
+            float interpolated_x2 = current_point_2.x + ((next_point_2.x - current_point_2.x) * t);
+            float interpolated_z2 = current_point_2.z + ((next_point_2.z - current_point_2.z) * t);
+
+            InverseKinematics(0, interpolated_x1, interpolated_z1);
+            InverseKinematics(3, interpolated_x1, interpolated_z1);
+
+            InverseKinematics(1, interpolated_x2, interpolated_z2);
+            InverseKinematics(2, interpolated_x2, interpolated_z2);
+
+            vTaskDelay(pdMS_TO_TICKS(15));
+          }
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        current_state = STATE_STOPPED;
-        break;
-      case STATE_WALKING_FORWARD:
 
         break;
-
+      }
       case STATE_STOPPED:
+      {
         if(current_state != previous_state)
         {
-          standStill();
+          
+          int total_points = sizeof(step_trajectory) / sizeof(step_trajectory[0]);
+
+          Point2D end_point_1 = step_trajectory[total_points - 1];
+          Point2D end_point_2 = step_trajectory[((total_points - 1) + 5 ) % total_points];
+
+          int steps = 15;
+          float standing_z = -150.0f;
+
+          for (int step = 1; step <= steps; step++)
+          {
+            float t = (float) step / steps;
+
+            float x1 = end_point_1.x + ((0.0f - end_point_1.x) * t);
+            float z1 = end_point_1.z + ((standing_z - end_point_1.z) * t);
+
+            float x2 = end_point_2.x + ((0.0f - end_point_2.x) * t);
+            float z2 = end_point_2.z + ((standing_z - end_point_2.z) * t);  
+
+            InverseKinematics(0, x1, z1);
+            InverseKinematics(3, x1, z1);
+            InverseKinematics(1, x2, z2);
+            InverseKinematics(2, x2, z2);
+
+            vTaskDelay(pdMS_TO_TICKS(20));
+
+          }
         }
         break;
+      }
 
       case STATE_SKID_TURN:
 
         break;
 
       case STATE_TEST_STEP:
-        for (int i = 0; i < (sizeof(step_trajectory) / sizeof(step_trajectory[0])); i++)
+        /*for (int i = 0; i < (sizeof(step_trajectory) / sizeof(step_trajectory[0])); i++)
         {
           //InverseKinematics(0, step_trajectory[i].x, step_trajectory[i].z);
-          InverseKinematics(0, 20.0f, -120.0f);
-          InverseKinematics(1, 20.0f, -120.0f);
-          InverseKinematics(2, 20.0f, -120.0f);
-          InverseKinematics(3, 20.0f, -120.0f);
-          vTaskDelay(pdMS_TO_TICKS(20));
+          //InverseKinematics(0,  20.0f, -100.0f);
+          InverseKinematics(3, step_trajectory[i].x, step_trajectory[i].z);
+          //InverseKinematics(1, step_trajectory[i].x, step_trajectory[i].z);
+          //InverseKinematics(2, step_trajectory[i].x, step_trajectory[i].z);
+          //InverseKinematics(3, step_trajectory[i].x, step_trajectory[i].z);
+          vTaskDelay(pdMS_TO_TICKS(100));
         }
-        current_state = STATE_STOPPED;
+        //current_state = STATE_STOPPED;
+        InverseKinematics(1, 0.0f, -100.0f);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        InverseKinematics(1, 0.0f, -150.0f);
+        vTaskDelay(pdMS_TO_TICKS(500));*/
 
+        //standStill();
         break;
     }
 
