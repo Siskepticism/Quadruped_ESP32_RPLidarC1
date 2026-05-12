@@ -89,7 +89,9 @@ void InverseKinematics(int leg_num, float target_x, float target_z)
   float target_knee_angle = acos(cos_angle) * (180.0f / M_PI);
 
   float alpha_rad = atan2 (target_x, -target_z );
-  float beta_rad = acos(((L1 * L1) + d_squared - (L2 * L2)) / (2.0f * L1 * distance));
+  float beta_arg = (((L1 * L1) + d_squared - (L2 * L2)) / (2.0f * L1 * distance));
+  beta_arg = constrain(beta_arg,-1.0f,1.0);
+  float beta_rad = acos(beta_arg);
   float target_hip_angle = (alpha_rad + beta_rad) * (180.0f / M_PI);
 
   int hip_idx = leg_num * 2;
@@ -283,6 +285,19 @@ void WalkingTask(void *pvParameters)
 
   unsigned long  last_print_time = 0;
 
+  int total_points = sizeof(step_trajectory) / sizeof(step_trajectory[0]);
+  int steps = 15;
+
+  static int traj_index = 0;  // which point of the trajectory we are on
+  static int interp_step = 1; // which point of the microsteps in interpolation we are on
+
+  // variables for tracking real time position fo the legs
+  static float current_x1 = 0.0f, current_z1 = -150.0f;
+  static float current_x2 = 0.0f, current_z2 = -150.0f;
+
+  static int stop_step = 1;
+  static float end_point_x1, end_point_z1, end_point_x2, end_point_z2;
+
   while(true)
   {
     float my_distance = 9999.0f;
@@ -321,8 +336,11 @@ void WalkingTask(void *pvParameters)
     {
       if (my_distance > 350.0f)
       {
-        current_state = STATE_WALKING_FORWARD;
-        //current_state = STATE_TEST_STEP;
+        if(current_state == STATE_STOPPED && stop_step > steps)
+        {
+          current_state = STATE_WALKING_FORWARD;
+          //current_state = STATE_TEST_STEP;
+        }
       } 
       else if(my_distance <= 300.0f) 
       {
@@ -350,75 +368,74 @@ void WalkingTask(void *pvParameters)
 
       case STATE_WALKING_FORWARD: 
       {
-        int total_points = sizeof(step_trajectory) / sizeof(step_trajectory[0]);
-        int steps = 15;
-
-        for (int i = 0; i < total_points; i++)
-        {
           // PAIR 1
-          Point2D current_point_1 = step_trajectory[i];
-          Point2D next_point_1 = step_trajectory[(i + 1) % total_points];
+          Point2D current_point_1 = step_trajectory[traj_index];
+          Point2D next_point_1 = step_trajectory[(traj_index + 1) % total_points];
 
-          //PAIR 2
-          int shifted_i = (i + 5) % total_points;
+          // PAIR 2
+          int shifted_i = (traj_index + 5) % total_points;
           Point2D current_point_2 = step_trajectory [shifted_i];
           Point2D next_point_2 = step_trajectory[(shifted_i + 1) % total_points];
 
-          for (int step = 1; step <= steps; step++)
-          {
-            float t = (float) step / steps;// with linear interpolation
-            // float t = (1.0f - cos((float)step / steps * M_PI)) / 2.0f; /cosine interpolation
+            float t = (float) interp_step / steps;// with linear interpolation
+            // float t = (1.0f - cos((float)interp_step / steps * M_PI)) / 2.0f; /cosine interpolation
 
-            float interpolated_x1 = current_point_1.x + ((next_point_1.x - current_point_1.x) * t);
-            float interpolated_z1 = current_point_1.z + ((next_point_1.z - current_point_1.z) * t);
+            current_x1 = current_point_1.x + ((next_point_1.x - current_point_1.x) * t);
+            current_z1 = current_point_1.z + ((next_point_1.z - current_point_1.z) * t);
 
-            float interpolated_x2 = current_point_2.x + ((next_point_2.x - current_point_2.x) * t);
-            float interpolated_z2 = current_point_2.z + ((next_point_2.z - current_point_2.z) * t);
+            current_x2 = current_point_2.x + ((next_point_2.x - current_point_2.x) * t);
+            current_z2 = current_point_2.z + ((next_point_2.z - current_point_2.z) * t);
 
-            InverseKinematics(0, interpolated_x1, interpolated_z1);
-            InverseKinematics(3, interpolated_x1, interpolated_z1);
+            InverseKinematics(0, current_x1, current_z1);
+            InverseKinematics(3, current_x1, current_z1);
 
-            InverseKinematics(1, interpolated_x2, interpolated_z2);
-            InverseKinematics(2, interpolated_x2, interpolated_z2);
+            InverseKinematics(1, current_x2, current_z2);
+            InverseKinematics(2, current_x2, current_z2);
 
+            interp_step++;
+            if(interp_step > steps)
+            {
+              interp_step = 1;
+              traj_index = (traj_index + 1) % total_points;
+            }
+
+            stop_step = 1;
             vTaskDelay(pdMS_TO_TICKS(15));
-          }
-        }
-
-        break;
+            break;
       }
+
       case STATE_STOPPED:
       {
         if(current_state != previous_state)
         {
-          
-          int total_points = sizeof(step_trajectory) / sizeof(step_trajectory[0]);
-
-          Point2D end_point_1 = step_trajectory[total_points - 1];
-          Point2D end_point_2 = step_trajectory[((total_points - 1) + 5 ) % total_points];
-
-          int steps = 15;
-          float standing_z = -150.0f;
-
-          for (int step = 1; step <= steps; step++)
-          {
-            float t = (float) step / steps;
-
-            float x1 = end_point_1.x + ((0.0f - end_point_1.x) * t);
-            float z1 = end_point_1.z + ((standing_z - end_point_1.z) * t);
-
-            float x2 = end_point_2.x + ((0.0f - end_point_2.x) * t);
-            float z2 = end_point_2.z + ((standing_z - end_point_2.z) * t);  
-
-            InverseKinematics(0, x1, z1);
-            InverseKinematics(3, x1, z1);
-            InverseKinematics(1, x2, z2);
-            InverseKinematics(2, x2, z2);
-
-            vTaskDelay(pdMS_TO_TICKS(20));
-
-          }
+          end_point_x1 = current_x1;
+          end_point_z1 = current_z1;
+          end_point_x2 = current_x2;
+          end_point_z2 = current_z2;
         }
+          if(stop_step <= steps)
+          {
+            float t = (float) stop_step / steps;
+            float standing_z = -150.0f;
+
+            current_x1 = end_point_x1 + ((0.0f - end_point_x1) * t);
+            current_z1 = end_point_z1 + ((standing_z - end_point_z1) * t);
+
+            current_x2 = end_point_x2 + ((0.0f - end_point_x2) * t);
+            current_z2 = end_point_z2 + ((standing_z - end_point_z2) * t);  
+
+            InverseKinematics(0, current_x1, current_z1);
+            InverseKinematics(3, current_x1, current_z1);
+            InverseKinematics(1, current_x2, current_z2);
+            InverseKinematics(2, current_x2, current_z2);
+            
+            stop_step++;
+            vTaskDelay(pdMS_TO_TICKS(20));
+          }
+          else
+          {
+            vTaskDelay(pdMS_TO_TICKS(50));
+          }
         break;
       }
 
@@ -449,12 +466,11 @@ void WalkingTask(void *pvParameters)
 
     previous_state = current_state;
 
-    vTaskDelay (pdMS_TO_TICKS(10)); //Sleep for 10 ms
+    //vTaskDelay (pdMS_TO_TICKS(10)); //Sleep for 10 ms
     //vTaskDelay(10 / portTICK_PERIOD_MS); //is the same
 
   }
 }
-
 
 void setup() {
 
