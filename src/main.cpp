@@ -56,6 +56,12 @@ void standStill() {
   }
 }
 
+void home_pose() {
+  for (int i = 0; i < 8; i++) {
+    pwm.setPWM(servo_channels[i], 0, servo_homes[i]);
+  }
+}
+
 int getPWM(float angleOffset, uint16_t homeValue)
 {
   int pulse = homeValue + (angleOffset * TICKS_PER_DEGREE);
@@ -125,19 +131,19 @@ const Point2D step_trajectory[10] =
 
   // --- SWING PHASE ---
 
-  {-40.0f, -130.0f}, // 1. Lift off the ground
-  {-20.0f, -115.0f}, // 2. Swing forward and up
-  {  0.0f, -110.0f}, // 3. Peak height (clearing obstacles)
-  { 20.0f, -115.0f}, // 4. Swing forward and start lowering
-  { 40.0f, -130.0f}, // 5. Nearing the ground
+  {-20.0f, -150.0f}, // 1. Lift off the ground
+  {-10.0f, -135.0f}, // 2. Swing forward and up
+  {  0.0f, -130.0f}, // 3. Peak height (clearing obstacles)
+  { 10.0f, -135.0f}, // 4. Swing forward and start lowering
+  { 20.0f, -150.0f}, // 5. Nearing the ground
 
   // --- STANCE PHASE ---
 
-  { 40.0f, -150.0f}, // 6. Plant foot firmly on the ground
-  { 20.0f, -150.0f}, // 7. Pulling body forward
-  {  0.0f, -150.0f}, // 8. Mid-stance (leg straight down)
-  {-20.0f, -150.0f}, // 9. Pushing body forward
-  {-40.0f, -150.0f}  // 10. Max extension, ready to lift again
+  { 20.0f, -170.0f}, // 6. Plant foot firmly on the ground
+  { 10.0f, -170.0f}, // 7. Pulling body forward
+  {  0.0f, -170.0f}, // 8. Mid-stance (leg straight down)
+  {-10.0f, -170.0f}, // 9. Pushing body forward
+  {-20.0f, -170.0f}  // 10. Max extension, ready to lift again
 
 
 };
@@ -377,8 +383,8 @@ void WalkingTask(void *pvParameters)
           Point2D current_point_2 = step_trajectory [shifted_i];
           Point2D next_point_2 = step_trajectory[(shifted_i + 1) % total_points];
 
-            float t = (float) interp_step / steps;// with linear interpolation
-            // float t = (1.0f - cos((float)interp_step / steps * M_PI)) / 2.0f; /cosine interpolation
+            //float t = (float) interp_step / steps;// with linear interpolation
+            float t = (1.0f - cos((float)interp_step / steps * M_PI)) / 2.0f; //cosine interpolation
 
             current_x1 = current_point_1.x + ((next_point_1.x - current_point_1.x) * t);
             current_z1 = current_point_1.z + ((next_point_1.z - current_point_1.z) * t);
@@ -401,6 +407,7 @@ void WalkingTask(void *pvParameters)
 
             stop_step = 1;
             vTaskDelay(pdMS_TO_TICKS(15));
+            //home_pose();
             break;
       }
 
@@ -436,6 +443,7 @@ void WalkingTask(void *pvParameters)
           {
             vTaskDelay(pdMS_TO_TICKS(50));
           }
+         //home_pose();
         break;
       }
 
