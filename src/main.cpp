@@ -280,7 +280,8 @@ enum RobotState
   STATE_STOPPED,
   STATE_SKID_TURN,
   STATE_BOOTING,
-  STATE_TEST_STEP
+  STATE_TEST_STEP,
+  STATE_RESUME
 };
 
 RobotState current_state = STATE_BOOTING;
@@ -344,7 +345,7 @@ void WalkingTask(void *pvParameters)
       {
         if(current_state == STATE_STOPPED && stop_step > steps)
         {
-          current_state = STATE_WALKING_FORWARD;
+          current_state = STATE_RESUME;
           //current_state = STATE_TEST_STEP;
         }
       } 
@@ -409,6 +410,39 @@ void WalkingTask(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(15));
             //home_pose();
             break;
+      }
+
+      case STATE_RESUME:
+      {
+        static int resume_step = 1;
+        float standing_z = -150.0f;
+
+        Point2D target1 = step_trajectory[traj_index];
+        Point2D target2 = step_trajectory[(traj_index + 5) % total_points];
+
+        if (resume_step <= steps)
+        {
+          float t = (float) resume_step / steps;
+
+          current_x1 = 0.0f + ((target1.x - 0.0f) * t);
+          current_z1 = standing_z + ((target1.z - standing_z) * t);
+          
+          current_x2 = 0.0f + ((target2.x - 0.0f) * t);
+          current_z2 = standing_z + ((target2.z - standing_z) * t);
+          
+          InverseKinematics(0, current_x1, current_z1);
+          InverseKinematics(3, current_x1, current_z1);
+          InverseKinematics(1, current_x2, current_z2);
+          InverseKinematics(2, current_x2, current_z2);
+          
+          resume_step++;
+          vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        else
+        {
+          resume_step = 1;
+          current_state = STATE_WALKING_FORWARD;
+        }
       }
 
       case STATE_STOPPED:
