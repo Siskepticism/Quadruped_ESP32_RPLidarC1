@@ -348,12 +348,19 @@ void WalkingTask(void *pvParameters)
           current_state = STATE_RESUME;
           //current_state = STATE_TEST_STEP;
         }
+        else if (current_state == STATE_SKID_TURN)
+        {
+          current_state = STATE_STOPPED;
+        }
       } 
-      else if(my_distance <= 300.0f) 
+      else if(my_distance <= 300.0f && (current_state == STATE_WALKING_FORWARD || current_state == STATE_RESUME)) 
       {
         current_state = STATE_STOPPED;
-        //current_state = STATE_SKID_TURN;
       } // Hysterisis 
+      else if(my_distance <= 300.0f && current_state == STATE_STOPPED && stop_step > steps) 
+      {
+        current_state = STATE_SKID_TURN;
+      } 
     }
 
     switch (current_state)
@@ -384,8 +391,8 @@ void WalkingTask(void *pvParameters)
           Point2D current_point_2 = step_trajectory [shifted_i];
           Point2D next_point_2 = step_trajectory[(shifted_i + 1) % total_points];
 
-            //float t = (float) interp_step / steps;// with linear interpolation
-            float t = (1.0f - cos((float)interp_step / steps * M_PI)) / 2.0f; //cosine interpolation
+            float t = (float) interp_step / steps;// with linear interpolation
+            //float t = (1.0f - cos((float)interp_step / steps * M_PI)) / 2.0f; //cosine interpolation
 
             current_x1 = current_point_1.x + ((next_point_1.x - current_point_1.x) * t);
             current_z1 = current_point_1.z + ((next_point_1.z - current_point_1.z) * t);
@@ -482,8 +489,42 @@ void WalkingTask(void *pvParameters)
       }
 
       case STATE_SKID_TURN:
+      {
+        // PAIR 1
+        Point2D current_point_1 = step_trajectory[traj_index];
+        Point2D next_point_1 = step_trajectory[(traj_index + 1) % total_points];
 
+        // PAIR 2
+        int shifted_i = (traj_index + 5) % total_points;
+        Point2D current_point_2 = step_trajectory [shifted_i];
+        Point2D next_point_2 = step_trajectory[(shifted_i + 1) % total_points];
+
+        float t = (float) interp_step / steps;// with linear interpolation
+        //float t = (1.0f - cos((float)interp_step / steps * M_PI)) / 2.0f; //cosine interpolation
+
+        current_x1 = current_point_1.x + ((next_point_1.x - current_point_1.x) * t);
+        current_z1 = current_point_1.z + ((next_point_1.z - current_point_1.z) * t);
+
+        current_x2 = current_point_2.x + ((next_point_2.x - current_point_2.x) * t);
+        current_z2 = current_point_2.z + ((next_point_2.z - current_point_2.z) * t);
+
+        InverseKinematics(0, current_x1, current_z1);
+        InverseKinematics(3, -1*current_x1, current_z1);
+
+        InverseKinematics(1, -1*current_x2, current_z2);
+        InverseKinematics(2, current_x2, current_z2);
+
+        interp_step++;
+        if(interp_step > steps)
+        {
+          interp_step = 1;
+          traj_index = (traj_index + 1) % total_points;
+        }
+
+        stop_step = 1;
+        vTaskDelay(pdMS_TO_TICKS(15));
         break;
+      }
 
       case STATE_TEST_STEP:
         /*for (int i = 0; i < (sizeof(step_trajectory) / sizeof(step_trajectory[0])); i++)
