@@ -281,7 +281,8 @@ enum RobotState
   STATE_SKID_TURN,
   STATE_BOOTING,
   STATE_TEST_STEP,
-  STATE_RESUME
+  STATE_RESUME,
+  STATE_RESUME_TURN
 };
 
 RobotState current_state = STATE_BOOTING;
@@ -310,6 +311,7 @@ void WalkingTask(void *pvParameters)
     float my_distance = 9999.0f;
     float my_angle = 0.0f;
     unsigned long my_timestamp = 0;
+    static unsigned long last_obstacle_time = 0;
 
     if (xSemaphoreTake(obstacleMutex,portMAX_DELAY) == pdTRUE)
     {
@@ -335,20 +337,26 @@ void WalkingTask(void *pvParameters)
 
     }
 
+    if (my_distance <= 300.0f) 
+    {
+      last_obstacle_time = millis(); 
+    }
+
     if (millis() - my_timestamp > 1500)
     {
       current_state = STATE_STOPPED;
     }
     else if(current_state != STATE_BOOTING && current_state != STATE_TEST_STEP)
     {
-      if (my_distance > 350.0f)
+      if (my_distance > 350.0f && (millis() - last_obstacle_time > 500))
       {
         if(current_state == STATE_STOPPED && stop_step > steps)
         {
+          traj_index = 0;
+          interp_step = 1;
           current_state = STATE_RESUME;
-          //current_state = STATE_TEST_STEP;
         }
-        else if (current_state == STATE_SKID_TURN)
+        else if (current_state == STATE_SKID_TURN || current_state == STATE_RESUME_TURN)
         {
           current_state = STATE_STOPPED;
         }
@@ -357,8 +365,10 @@ void WalkingTask(void *pvParameters)
       {
         current_state = STATE_STOPPED;
       } // Hysterisis 
-      else if(my_distance <= 300.0f && current_state == STATE_STOPPED && stop_step > steps) 
+      else if(my_distance <= 350.0f && current_state == STATE_STOPPED && stop_step > steps) 
       {
+        traj_index = 0;
+        interp_step = 1;
         current_state = STATE_SKID_TURN;
       } 
     }
@@ -414,7 +424,7 @@ void WalkingTask(void *pvParameters)
             }
 
             stop_step = 1;
-            vTaskDelay(pdMS_TO_TICKS(15));
+            vTaskDelay(pdMS_TO_TICKS(5));
             //home_pose();
             break;
       }
@@ -450,32 +460,89 @@ void WalkingTask(void *pvParameters)
           resume_step = 1;
           current_state = STATE_WALKING_FORWARD;
         }
+      break;
+      }
+
+      case STATE_RESUME_TURN:
+      {
+        static int resume_turn_step = 1;
+        float standing_z = -150.0f;
+
+        Point2D target1 = step_trajectory[traj_index];
+        Point2D target2 = step_trajectory[(traj_index + 5) % total_points];
+
+        if (resume_turn_step <= steps)
+        {
+          float t = (float) resume_turn_step / steps;
+
+          current_x1 = 0.0f + ((target1.x - 0.0f) * t);
+          current_z1 = standing_z + ((target1.z - standing_z) * t);
+          
+          current_x2 = 0.0f + ((target2.x - 0.0f) * t);
+          current_z2 = standing_z + ((target2.z - standing_z) * t);
+          
+          InverseKinematics(0, current_x1, current_z1);
+          InverseKinematics(3, -1.0f * current_x1, current_z1); 
+          InverseKinematics(1, -1.0f * current_x2, current_z2); 
+          InverseKinematics(2, current_x2, current_z2);
+          
+          resume_turn_step++;
+          vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        else
+        {
+          resume_turn_step = 1;
+          current_state = STATE_SKID_TURN; 
+        }
+        break;
       }
 
       case STATE_STOPPED:
       {
+
+        static float stop_leg0_x, stop_leg1_x, stop_leg2_x, stop_leg3_x;
+
         if(current_state != previous_state)
         {
-          end_point_x1 = current_x1;
+          if (previous_state == STATE_SKID_TURN || previous_state == STATE_RESUME_TURN)
+          {
+            stop_leg0_x = current_x1;
+            stop_leg3_x = -1.0f * current_x1;
+
+            stop_leg1_x = -1.0f * current_x2;
+            stop_leg2_x = current_x2;
+          }
+          else
+          {
+            stop_leg0_x = current_x1;
+            stop_leg3_x = current_x1;
+            
+            stop_leg1_x = current_x2;
+            stop_leg2_x = current_x2;
+          }
+
           end_point_z1 = current_z1;
-          end_point_x2 = current_x2;
           end_point_z2 = current_z2;
+
+          stop_step = 1;
         }
           if(stop_step <= steps)
           {
             float t = (float) stop_step / steps;
             float standing_z = -150.0f;
 
-            current_x1 = end_point_x1 + ((0.0f - end_point_x1) * t);
+            float move_leg0_x = stop_leg0_x + ((0.0f - stop_leg0_x) * t);
+            float move_leg3_x = stop_leg3_x + ((0.0f - stop_leg3_x) * t);
+            float move_leg1_x = stop_leg1_x + ((0.0f - stop_leg1_x) * t);
+            float move_leg2_x = stop_leg2_x + ((0.0f - stop_leg2_x) * t);
+           
             current_z1 = end_point_z1 + ((standing_z - end_point_z1) * t);
-
-            current_x2 = end_point_x2 + ((0.0f - end_point_x2) * t);
             current_z2 = end_point_z2 + ((standing_z - end_point_z2) * t);  
 
-            InverseKinematics(0, current_x1, current_z1);
-            InverseKinematics(3, current_x1, current_z1);
-            InverseKinematics(1, current_x2, current_z2);
-            InverseKinematics(2, current_x2, current_z2);
+            InverseKinematics(0, move_leg0_x, current_z1);
+            InverseKinematics(3, move_leg3_x, current_z1);
+            InverseKinematics(1, move_leg1_x, current_z2);
+            InverseKinematics(2, move_leg2_x, current_z2);
             
             stop_step++;
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -509,9 +576,9 @@ void WalkingTask(void *pvParameters)
         current_z2 = current_point_2.z + ((next_point_2.z - current_point_2.z) * t);
 
         InverseKinematics(0, current_x1, current_z1);
-        InverseKinematics(3, -1*current_x1, current_z1);
+        InverseKinematics(3, -1.0f *current_x1, current_z1);
 
-        InverseKinematics(1, -1*current_x2, current_z2);
+        InverseKinematics(1, -1.0f *current_x2, current_z2);
         InverseKinematics(2, current_x2, current_z2);
 
         interp_step++;
@@ -522,7 +589,7 @@ void WalkingTask(void *pvParameters)
         }
 
         stop_step = 1;
-        vTaskDelay(pdMS_TO_TICKS(15));
+        vTaskDelay(pdMS_TO_TICKS(5));
         break;
       }
 
@@ -594,6 +661,5 @@ void setup() {
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
   vTaskDelete(NULL);
 }
